@@ -141,7 +141,16 @@ export function runRules(church, message, senderText) {
 let client = null;
 function getClient() {
   if (!process.env.ANTHROPIC_API_KEY) return null;
-  if (!client) client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, timeout: 25_000, maxRetries: 1 });
+  if (!client) {
+    // Keys that aren't tied to one Anthropic workspace need the workspace named on every request.
+    const workspace = (process.env.ANTHROPIC_WORKSPACE_ID || '').trim();
+    client = new Anthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY,
+      timeout: 25_000,
+      maxRetries: 1,
+      ...(workspace ? { defaultHeaders: { 'anthropic-workspace-id': workspace } } : {}),
+    });
+  }
   return client;
 }
 export function aiAvailable() { return !!process.env.ANTHROPIC_API_KEY; }

@@ -25,6 +25,7 @@ A web app church members use to check whether a text or email really came from t
   - `DATA_DIR=/data`
   - `NODE_ENV=production`
   - optional `PUBLIC_URL` once you have your own domain, e.g. `https://isthisreallypastor.com`
+  - optional `ANTHROPIC_WORKSPACE_ID` (starts with `wrkspc_`), only needed if the API key isn't tied to a workspace
   - optional `ANTHROPIC_MODEL` to change the AI model (default `claude-haiku-5-5`)
 
 Without an API key the app still works using the code rules alone.
