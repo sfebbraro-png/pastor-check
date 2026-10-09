@@ -176,7 +176,7 @@ export function loginPage({ error = '', email = '' } = {}) {
 }
 
 // ---------- admin ----------
-export function adminPage({ church, memberUrl, stats, reports, unseen, saved = false, welcome = false, error = '', qrSvg }) {
+export function adminPage({ church, memberUrl, stats, reports, unseen, saved = false, welcome = false, cleared = false, error = '', qrSvg }) {
   const reportHtml = reports.length ? reports.map(r => `
     <div class="report ${r.seen ? '' : 'new'}">
       <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
@@ -192,6 +192,7 @@ export function adminPage({ church, memberUrl, stats, reports, unseen, saved = f
   const body = `
 <div class="wrap-wide section">
   ${saved ? '<div class="notice" role="status">Saved.</div>' : ''}
+  ${cleared ? '<div class="notice" role="status">Test checks and reports cleared. The counts start from zero.</div>' : ''}
   ${welcome ? '<div class="notice" role="status"><strong>Your page is ready.</strong> Open it and try a sample scam text first. Then print the flyer for Sunday\'s bulletin and share the link in your next newsletter.</div>' : ''}
   ${error ? `<div class="error" role="alert">${esc(error)}</div>` : ''}
   <h1>${esc(church.name)}</h1>
@@ -221,6 +222,14 @@ export function adminPage({ church, memberUrl, stats, reports, unseen, saved = f
     <h2>Reports from members</h2>
     ${reportHtml}
   </div>
+
+  <details class="card" style="margin-bottom:24px">
+    <summary>Clear test data</summary>
+    <p style="margin-top:12px">Done testing? This erases every check and report so far, and the counts start again at zero. Your church information stays.</p>
+    <form method="post" action="/admin/clear" onsubmit="return confirm('Erase all checks and reports? This cannot be undone.')">
+      <button class="btn secondary" type="submit">Clear all checks and reports</button>
+    </form>
+  </details>
 
   <details class="card">
     <summary>Edit your church information</summary>

@@ -23,6 +23,8 @@ const cases = [
   ['zelle ask from gmail', 'Mike Russo here, please Zelle $300 for the youth trip today, keep this between us', 'pastormike.russo@gmail.com', 'scam'],
   ['new number claim', 'Hey it\'s Pastor Mike, this is my new number, save it.', '804-555-1212', 'scam'],
   ['code phishing', 'This is the church office. Please reply with the verification code we just sent to update the church directory.', '', 'scam'],
+  ['first name only, asks for money', 'Hi, this is Pastor Mike. Could you send some money?', '', 'scam'],
+  ['dollar amount', 'Mike here. Can you lend me $200 till Sunday?', '', 'scam'],
   ['harmless reminder from real number', 'Reminder: choir practice moved to 7pm Thursday. See you there!', '757-555-4471', 'caution'],
   ['harmless note, unknown sender', 'Thanks for helping with the potluck on Sunday.', '', 'caution'],
 ];
@@ -45,7 +47,8 @@ assert.equal(a.verdict, 'scam');
 assert.ok(a.steps.some(s => s.includes('757-555-0100')), 'steps include office phone');
 assert.ok(a.contactHints.some(h => h.includes('4471')), 'hint shows last four of real number');
 assert.ok(!JSON.stringify(a).includes('757-555-4471'), 'full private staff number never shown');
-const b = await checkMessage(church, { message: cases[7][1], sender: cases[7][2] });
+const harmless = cases.find(c => c[0] === 'harmless reminder from real number');
+const b = await checkMessage(church, { message: harmless[1], sender: harmless[2] });
 assert.equal(b.verdict, 'caution');
 assert.ok(!/\bsafe\b/i.test(b.headline + b.explanation) || /not|can't|cannot/i.test(b.headline + b.explanation), 'never calls it safe');
 console.log('ok   full answers (no AI)');

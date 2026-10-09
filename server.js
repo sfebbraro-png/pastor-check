@@ -201,7 +201,7 @@ app.get('/admin', requireLogin, async (req, res) => {
   const memberUrl = `${baseUrl(req)}/c/${church.slug}`;
   const html = views.adminPage({
     church, memberUrl, stats: db.checkStats(church.id), reports: db.listReports(church.id),
-    unseen: db.unseenReportCount(church.id), saved: req.query.saved === '1', welcome: req.query.welcome === '1', qrSvg: await qrSvgFor(memberUrl),
+    unseen: db.unseenReportCount(church.id), saved: req.query.saved === '1', welcome: req.query.welcome === '1', cleared: req.query.cleared === '1', qrSvg: await qrSvgFor(memberUrl),
   });
   db.markReportsSeen(church.id);
   res.send(html);
@@ -216,6 +216,10 @@ app.post('/admin', requireLogin, async (req, res) => {
   }
   db.updateChurch(req.church.id, c);
   res.redirect('/admin?saved=1');
+});
+app.post('/admin/clear', requireLogin, (req, res) => {
+  db.clearActivity(req.church.id);
+  res.redirect('/admin?cleared=1');
 });
 app.post('/admin/reports/:id/delete', requireLogin, (req, res) => {
   db.deleteReport(req.church.id, Number(req.params.id));

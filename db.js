@@ -113,6 +113,10 @@ export function unseenReportCount(churchId) {
 export function markReportsSeen(churchId) {
   db.prepare('UPDATE reports SET seen = 1 WHERE church_id = ?').run(churchId);
 }
+export function clearActivity(churchId) {
+  db.prepare('DELETE FROM checks WHERE church_id = ?').run(churchId);
+  db.prepare('DELETE FROM reports WHERE church_id = ?').run(churchId);
+}
 export function deleteReport(churchId, id) {
   db.prepare('DELETE FROM reports WHERE church_id = ? AND id = ?').run(churchId, id);
 }

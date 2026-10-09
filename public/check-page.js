@@ -35,6 +35,16 @@
     });
   }
 
+  // Safari can bring back old typing and results when the page is reopened. Always start clean.
+  function clearAll() {
+    form.reset(); image = null; last = null;
+    preview.removeAttribute('src'); preview.style.display = 'none';
+    resultEl.innerHTML = '';
+    btn.disabled = false; btn.textContent = 'Check this message';
+  }
+  window.addEventListener('pageshow', clearAll);
+  clearAll();
+
   fileInput.addEventListener('change', async () => {
     image = null; preview.style.display = 'none';
     const f = fileInput.files && fileInput.files[0];
@@ -79,7 +89,7 @@
   }
 
   function reset() {
-    form.reset(); image = null; preview.style.display = 'none'; resultEl.innerHTML = '';
+    clearAll();
     window.scrollTo({ top: 0, behavior: 'smooth' });
     document.getElementById('message').focus();
   }
