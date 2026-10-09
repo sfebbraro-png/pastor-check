@@ -72,7 +72,7 @@ p { margin: 0 0 1em; }
 /* forms */
 label { display: block; font-weight: 600; margin-bottom: 6px; }
 .hint { display: block; font-weight: 400; color: var(--ink-soft); font-size: 16px; margin-top: 2px; }
-input[type=text], input[type=email], input[type=tel], input[type=password], input[type=url], textarea, select {
+input[type=text], input[type=email], input[type=tel], input[type=password], input[type=url], input[type=date], textarea, select {
   width: 100%; font: 19px/1.4 var(--sans); color: var(--ink);
   padding: 14px 14px; border: 2px solid #cfc6b8; border-radius: 10px; background: #fff;
 }

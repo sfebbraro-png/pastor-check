@@ -162,7 +162,7 @@ export function setupPage({ values = {}, error = '' } = {}) {
   return layout({ title: `Set up your church | ${APP_NAME}`, body, nav: publicNav });
 }
 
-export function loginPage({ error = '', email = '' } = {}) {
+export function loginPage({ error = '', email = '', supportEmail = '' } = {}) {
   const body = `
 <div class="wrap section" style="max-width:520px">
   <h1>Church office login</h1>
@@ -172,13 +172,135 @@ export function loginPage({ error = '', email = '' } = {}) {
     <div class="field"><label for="password">Password</label><input type="password" id="password" name="password" required autocomplete="current-password"></div>
     <button class="btn big" type="submit">Log in</button>
   </form>
-  <p class="muted small" style="margin-top:16px">New here? <a href="/setup">Set up your church</a>.</p>
+  <p class="muted small" style="margin-top:16px">Forgot your password? ${supportEmail ? `Email <a href="mailto:${esc(supportEmail)}">${esc(supportEmail)}</a> and we'll send you a link to choose a new one.` : 'Contact the person who set up your page for a new login link.'}</p>
+  <p class="muted small">New here? <a href="/setup">Set up your church</a>.</p>
 </div>`;
   return layout({ title: `Log in | ${APP_NAME}`, body, nav: publicNav });
 }
 
+// ---------- claim a page (hand-off or new password) ----------
+export function claimPage({ church = null, email = '', error = '', expired = false, supportEmail = '' } = {}) {
+  const body = expired ? `
+<div class="wrap section" style="max-width:560px">
+  <h1>This link has expired or was already used</h1>
+  <p>Login links work once and last 7 days. ${supportEmail ? `Email <a href="mailto:${esc(supportEmail)}">${esc(supportEmail)}</a> for a new one.` : 'Ask the person who sent it for a new one.'}</p>
+  <a class="btn secondary" href="/login">Go to church login</a>
+</div>` : `
+<div class="wrap section" style="max-width:560px">
+  <h1>Welcome, ${esc(church.name)}</h1>
+  <p>Choose a password for your church office. After this, you'll log in with <strong>${esc(email)}</strong> and this password. Anyone who used a different login for this page before will no longer have access.</p>
+  ${error ? `<div class="error" role="alert">${esc(error)}</div>` : ''}
+  <form method="post" class="card">
+    <input type="text" name="username" value="${esc(email)}" autocomplete="username" hidden>
+    <div class="field"><label for="password">New password <span class="hint">At least 8 characters</span></label><input type="password" id="password" name="password" required minlength="8" autocomplete="new-password"></div>
+    <div class="field"><label for="password2">Type it again</label><input type="password" id="password2" name="password2" required minlength="8" autocomplete="new-password"></div>
+    <button class="btn big" type="submit">Save my password</button>
+  </form>
+</div>`;
+  return layout({ title: `Set your password | ${APP_NAME}`, body });
+}
+
+// ---------- owner pages ----------
+export function ownerSetupPage({ ready = false, error = '', email = '' } = {}) {
+  const body = `
+<div class="wrap section" style="max-width:560px">
+  <h1>Owner setup</h1>
+  ${!ready ? '<p>Owner setup isn\'t turned on. Add an OWNER_SETUP_CODE variable in Railway first.</p>' : `
+  <p>This creates the one owner account for the whole site. It works once.</p>
+  ${error ? `<div class="error" role="alert">${esc(error)}</div>` : ''}
+  <form method="post" class="card">
+    <div class="field"><label for="code">Setup code</label><input type="text" id="code" name="code" required autocomplete="off" autocapitalize="off"></div>
+    <div class="field"><label for="email">Your email</label><input type="email" id="email" name="email" value="${esc(email)}" required autocapitalize="off" autocomplete="username"></div>
+    <div class="field"><label for="password">Owner password <span class="hint">At least 10 characters</span></label><input type="password" id="password" name="password" required minlength="10" autocomplete="new-password"></div>
+    <div class="field"><label for="password2">Type it again</label><input type="password" id="password2" name="password2" required minlength="10" autocomplete="new-password"></div>
+    <button class="btn big" type="submit">Create owner account</button>
+  </form>`}
+</div>`;
+  return layout({ title: `Owner setup | ${APP_NAME}`, body });
+}
+
+export function ownerLoginPage({ error = '', email = '' } = {}) {
+  const body = `
+<div class="wrap section" style="max-width:520px">
+  <h1>Owner login</h1>
+  ${error ? `<div class="error" role="alert">${esc(error)}</div>` : ''}
+  <form method="post" action="/owner/login" class="card">
+    <div class="field"><label for="email">Email</label><input type="email" id="email" name="email" value="${esc(email)}" required autocapitalize="off" autocomplete="username"></div>
+    <div class="field"><label for="password">Password</label><input type="password" id="password" name="password" required autocomplete="current-password"></div>
+    <button class="btn big" type="submit">Log in</button>
+  </form>
+</div>`;
+  return layout({ title: `Owner login | ${APP_NAME}`, body });
+}
+
+function shortDate(s) {
+  if (!s) return '';
+  const d = new Date(String(s).replace(' ', 'T') + (String(s).includes('Z') ? '' : 'Z'));
+  return isNaN(d) ? esc(s) : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'America/New_York' });
+}
+
+export function ownerPage({ owner, churches, plans, saved, linkFor, link, linkEmail, linkError }) {
+  const real = churches.filter(c => c.slug !== 'demo');
+  const count = p => real.filter(c => c.plan === p).length;
+  const rows = real.map(c => `
+  <div class="card" id="church-${c.id}" style="margin-bottom:16px">
+    <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:baseline">
+      <h3 style="margin:0">${esc(c.name)} <span class="pill ${c.plan === 'paid' ? '' : 'caution'}" style="${c.plan === 'paid' ? 'background:var(--ok)' : c.plan === 'cancelled' ? 'background:#666' : ''}">${esc(c.plan)}</span></h3>
+      <span class="muted small">Signed up ${shortDate(c.created_at)}</span>
+    </div>
+    <p class="small" style="margin:8px 0">${esc(c.city)}${c.city ? ' · ' : ''}Office ${esc(c.office_phone)} · Login: ${esc(c.admin_email)}${c.handed_off_at ? ` · <strong>Handed to church ${shortDate(c.handed_off_at)}</strong>` : ' · <span class="muted">Not handed off yet</span>'}</p>
+    <p class="small" style="margin:0 0 12px">${c.checks_30} checks in the last 30 days · ${c.checks_total} all time${c.last_check ? ` · last on ${shortDate(c.last_check)}` : ''} · <a href="${esc(c.memberUrl)}" target="_blank">Members' page</a></p>
+    ${String(saved) === String(c.id) ? '<div class="notice" role="status">Saved.</div>' : ''}
+    <form method="post" action="/owner/church/${c.id}/billing" class="grid2" style="align-items:end">
+      <div class="field"><label for="plan-${c.id}">Status</label><select id="plan-${c.id}" name="plan">${plans.map(p => `<option${p === c.plan ? ' selected' : ''}>${p}</option>`).join('')}</select></div>
+      <div class="field"><label for="paid-${c.id}">Paid through</label><input type="date" id="paid-${c.id}" name="paid_until" value="${esc(c.paid_until)}"></div>
+      <div class="field" style="grid-column:1/-1"><label for="note-${c.id}">Your notes <span class="hint">Only you see these. Example: "Paid $99 by check Oct 15. Contact: Linda, secretary."</span></label><input type="text" id="note-${c.id}" name="owner_note" value="${esc(c.owner_note)}"></div>
+      <div><button class="btn secondary" type="submit">Save</button></div>
+    </form>
+    <details style="margin-top:12px" ${linkFor === c.id ? 'open' : ''}>
+      <summary>Make a login link</summary>
+      <p class="small">Use this when a church forgets its password or needs to change who logs in. The link works once, for 7 days. When they use it, any older login for this church stops working.</p>
+      ${linkFor === c.id && linkError ? `<div class="error" role="alert">${esc(linkError)}</div>` : ''}
+      ${linkFor === c.id && link ? `<div class="notice"><strong>Send this link to ${esc(linkEmail)}:</strong><div class="linkbox" style="margin-top:8px"><code id="link-${c.id}">${esc(link)}</code><button class="btn secondary" type="button" onclick="navigator.clipboard.writeText(document.getElementById('link-${c.id}').textContent).then(()=>{this.textContent='Copied'})">Copy</button></div></div>` : ''}
+      <form method="post" action="/owner/church/${c.id}/link" class="linkbox">
+        <input type="email" name="email" value="${esc(linkFor === c.id && linkEmail ? linkEmail : c.admin_email)}" aria-label="Email the church will log in with" style="flex:1 1 260px" autocapitalize="off">
+        <button class="btn" type="submit">Make link</button>
+      </form>
+    </details>
+  </div>`).join('');
+
+  const body = `
+<div class="wrap-wide section">
+  <h1>All churches</h1>
+  <p class="muted">Signed in as ${esc(owner.email)}. This page shows accounts and usage only. Members' messages and reports stay private to each church.</p>
+  <div class="stats">
+    <div class="stat"><div class="n">${real.length}</div><div class="l">Churches</div></div>
+    <div class="stat"><div class="n">${count('paid')}</div><div class="l">Paid</div></div>
+    <div class="stat"><div class="n">${count('trial')}</div><div class="l">Free trial</div></div>
+    <div class="stat"><div class="n">${real.reduce((n, c) => n + c.checks_30, 0)}</div><div class="l">Checks in the last 30 days</div></div>
+  </div>
+  ${rows || '<p class="muted">No churches yet.</p>'}
+</div>`;
+  const nav = `<form method="post" action="/owner/logout" style="display:inline"><button type="submit" style="background:none;border:0;color:var(--brand);font:inherit;text-decoration:underline;cursor:pointer;padding:0">Log out</button></form>`;
+  return layout({ title: `Owner | ${APP_NAME}`, body, nav, wide: true });
+}
+
 // ---------- admin ----------
-export function adminPage({ church, memberUrl, stats, reports, unseen, saved = false, welcome = false, cleared = false, error = '', qrSvg }) {
+export function adminPage({ church, memberUrl, stats, reports, unseen, saved = false, welcome = false, cleared = false, claimed = false, error = '', qrSvg, handoffLink = '', handoffEmail = '', handoffError = '' }) {
+  const handedOff = !!church.handed_off_at;
+  const handoffHtml = `
+  <details class="card" style="margin-bottom:24px" ${handoffLink || handoffError ? 'open' : ''}>
+    <summary>${handedOff ? 'Change who logs in' : 'Hand this page to the church'}</summary>
+    <p style="margin-top:12px">${handedOff
+      ? 'Use this when a new person takes over the church office. Enter their email, then send them the link. When they choose a password, this login stops working.'
+      : 'Enter the church office\'s email address and send them the link this makes. When they open it and choose a password, the page is theirs and this login stops working. Their members\' page and QR code stay exactly the same.'}</p>
+    ${handoffError ? `<div class="error" role="alert">${esc(handoffError)}</div>` : ''}
+    ${handoffLink ? `<div class="notice"><strong>Send this link to ${esc(handoffEmail)}.</strong> It works once, for 7 days.<div class="linkbox" style="margin-top:8px"><code id="handoffLink">${esc(handoffLink)}</code><button class="btn secondary" type="button" onclick="navigator.clipboard.writeText(document.getElementById('handoffLink').textContent).then(()=>{this.textContent='Copied'})">Copy link</button></div></div>` : ''}
+    <form method="post" action="/admin/handoff" class="linkbox">
+      <input type="email" name="email" value="${esc(handoffEmail)}" placeholder="office@theirchurch.org" aria-label="Church office email" required autocapitalize="off" style="flex:1 1 260px">
+      <button class="btn" type="submit">Make the link</button>
+    </form>
+  </details>`;
   const reportHtml = reports.length ? reports.map(r => `
     <div class="report ${r.seen ? '' : 'new'}">
       <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
@@ -195,6 +317,7 @@ export function adminPage({ church, memberUrl, stats, reports, unseen, saved = f
 <div class="wrap-wide section">
   ${saved ? '<div class="notice" role="status">Saved.</div>' : ''}
   ${cleared ? '<div class="notice" role="status">Test checks and reports cleared. The counts start from zero.</div>' : ''}
+  ${claimed ? `<div class="notice" role="status"><strong>Your password is saved.</strong> From now on, log in with ${esc(church.admin_email)}.</div>` : ''}
   ${welcome ? '<div class="notice" role="status"><strong>Your page is ready.</strong> Open it and try a sample scam text first. Then print the flyer for Sunday\'s bulletin and share the link in your next newsletter.</div>' : ''}
   ${error ? `<div class="error" role="alert">${esc(error)}</div>` : ''}
   <h1>${esc(church.name)}</h1>
@@ -224,6 +347,8 @@ export function adminPage({ church, memberUrl, stats, reports, unseen, saved = f
     <h2>Reports from members</h2>
     ${reportHtml}
   </div>
+
+  ${handoffHtml}
 
   <details class="card" style="margin-bottom:24px">
     <summary>Clear test data</summary>

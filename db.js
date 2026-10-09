@@ -45,9 +45,35 @@ CREATE TABLE IF NOT EXISTS reports (
   member_note TEXT DEFAULT '',
   seen INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS invites (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  church_id INTEGER NOT NULL REFERENCES churches(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  email TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL,
+  used_at TEXT
+);
+CREATE TABLE IF NOT EXISTS owners (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  session_version INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE INDEX IF NOT EXISTS idx_checks_church ON checks(church_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_reports_church ON reports(church_id, created_at);
 `);
+
+// Add columns to churches made by the first version.
+const churchCols = db.prepare('PRAGMA table_info(churches)').all().map(c => c.name);
+const addCol = (name, def) => { if (!churchCols.includes(name)) db.exec(`ALTER TABLE churches ADD COLUMN ${name} ${def}`); };
+addCol('session_version', 'INTEGER NOT NULL DEFAULT 1');
+addCol('owner_note', "TEXT NOT NULL DEFAULT ''");
+addCol('paid_until', "TEXT NOT NULL DEFAULT ''");
+addCol('handed_off_at', 'TEXT');
+
+export const PLANS = ['trial', 'paid', 'cancelled'];
 
 export const LEADER_TITLES = ['Pastor', 'Father', 'Reverend', 'Minister', 'Elder', 'Bishop', 'Rabbi'];
 export function cleanTitle(t) {
@@ -126,6 +152,42 @@ export function clearActivity(churchId) {
 }
 export function deleteReport(churchId, id) {
   db.prepare('DELETE FROM reports WHERE church_id = ? AND id = ?').run(churchId, id);
+}
+
+// ---------- church logins: hand-off and reset links ----------
+export function setChurchLogin(id, email, passwordHash) {
+  db.prepare(`UPDATE churches SET admin_email = ?, password_hash = ?, session_version = session_version + 1,
+    handed_off_at = COALESCE(handed_off_at, datetime('now')) WHERE id = ?`).run(email, passwordHash, id);
+  db.prepare("UPDATE invites SET used_at = COALESCE(used_at, datetime('now')) WHERE church_id = ?").run(id);
+}
+export function createInvite(churchId, email, tokenHash, days = 7) {
+  db.prepare(`INSERT INTO invites (church_id, token_hash, email, expires_at) VALUES (?,?,?, datetime('now', ?))`)
+    .run(churchId, tokenHash, email, `+${days} days`);
+}
+export function getInvite(tokenHash) {
+  return db.prepare(`SELECT * FROM invites WHERE token_hash = ? AND used_at IS NULL AND expires_at > datetime('now')`).get(tokenHash) || null;
+}
+
+// ---------- owner ----------
+export function ownerCount() { return db.prepare('SELECT COUNT(*) n FROM owners').get().n; }
+export function createOwner(email, passwordHash) {
+  db.prepare('INSERT INTO owners (email, password_hash) VALUES (?,?)').run(email, passwordHash);
+}
+export function getOwnerByEmail(email) { return db.prepare('SELECT * FROM owners WHERE email = ?').get(email) || null; }
+export function getOwnerById(id) { return db.prepare('SELECT * FROM owners WHERE id = ?').get(id) || null; }
+export function firstOwnerEmail() { return (db.prepare('SELECT email FROM owners ORDER BY id LIMIT 1').get() || {}).email || ''; }
+
+export function listChurchesForOwner() {
+  return db.prepare(`
+    SELECT c.id, c.slug, c.name, c.city, c.office_phone, c.admin_email, c.plan, c.paid_until, c.owner_note,
+           c.created_at, c.handed_off_at,
+           (SELECT COUNT(*) FROM checks k WHERE k.church_id = c.id) AS checks_total,
+           (SELECT COUNT(*) FROM checks k WHERE k.church_id = c.id AND k.created_at >= datetime('now','-30 days')) AS checks_30,
+           (SELECT MAX(created_at) FROM checks k WHERE k.church_id = c.id) AS last_check
+    FROM churches c ORDER BY c.created_at DESC`).all();
+}
+export function updateBilling(id, plan, paidUntil, note) {
+  db.prepare('UPDATE churches SET plan = ?, paid_until = ?, owner_note = ? WHERE id = ?').run(plan, paidUntil, note, id);
 }
 
 export { DATA_DIR };

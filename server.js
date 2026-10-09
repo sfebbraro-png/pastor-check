@@ -39,26 +39,61 @@ function loadSecret() {
 const SECRET = loadSecret();
 const sign = v => crypto.createHmac('sha256', SECRET).update(v).digest('base64url');
 
-function setSession(res, churchId) {
-  const exp = Date.now() + 1000 * 60 * 60 * 24 * 30;
-  const v = `${churchId}.${exp}`;
-  res.cookie('sid', `${v}.${sign(v)}`, { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', maxAge: 1000 * 60 * 60 * 24 * 30, path: '/' });
+// A cookie holds: who, which login version, expiry, signature. Changing a church's login
+// (hand-off or reset) bumps the version, so every older cookie stops working.
+const MONTH = 1000 * 60 * 60 * 24 * 30;
+function setCookie(res, name, id, version) {
+  const exp = Date.now() + MONTH;
+  const v = `${name}:${id}.${version}.${exp}`;
+  res.cookie(name, `${id}.${version}.${exp}.${sign(v)}`, { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', maxAge: MONTH, path: '/' });
 }
-function readSession(req) {
-  const raw = (req.headers.cookie || '').split(/;\s*/).find(c => c.startsWith('sid='));
+function readCookie(req, name) {
+  const raw = (req.headers.cookie || '').split(/;\s*/).find(c => c.startsWith(`${name}=`));
   if (!raw) return null;
-  const [id, exp, sig] = decodeURIComponent(raw.slice(4)).split('.');
-  if (!id || !exp || !sig) return null;
-  const expected = sign(`${id}.${exp}`);
+  const [id, version, exp, sig] = decodeURIComponent(raw.slice(name.length + 1)).split('.');
+  if (!id || !version || !exp || !sig) return null;
+  const expected = sign(`${name}:${id}.${version}.${exp}`);
   if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
   if (Number(exp) < Date.now()) return null;
-  return db.getChurchById(Number(id));
+  return { id: Number(id), version: Number(version) };
+}
+const setSession = (res, church) => setCookie(res, 'sid', church.id, church.session_version);
+function readSession(req) {
+  const c = readCookie(req, 'sid');
+  if (!c) return null;
+  const church = db.getChurchById(c.id);
+  return church && church.session_version === c.version ? church : null;
+}
+function readOwner(req) {
+  const c = readCookie(req, 'oid');
+  if (!c) return null;
+  const owner = db.getOwnerById(c.id);
+  return owner && owner.session_version === c.version ? owner : null;
 }
 function requireLogin(req, res, next) {
   const church = readSession(req);
   if (!church) return res.redirect('/login');
   req.church = church;
   next();
+}
+function requireOwner(req, res, next) {
+  const owner = readOwner(req);
+  if (!owner) return res.redirect(db.ownerCount() ? '/owner/login' : '/owner/setup');
+  req.owner = owner;
+  next();
+}
+
+// One-time links: we keep only a fingerprint of the token, never the token itself.
+const tokenHash = t => crypto.createHash('sha256').update(String(t)).digest('hex');
+function makeLoginLink(req, churchId, email) {
+  const token = crypto.randomBytes(24).toString('base64url');
+  db.createInvite(churchId, email, tokenHash(token), 7);
+  return `${baseUrl(req)}/claim/${token}`;
+}
+const validEmail = e => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e);
+function emailTakenByOther(email, churchId) {
+  const other = db.getChurchByEmail(email);
+  return !!other && other.id !== churchId;
 }
 
 // ---------- passwords ----------
@@ -179,43 +214,132 @@ app.post('/setup', (req, res) => {
   if (!error && db.getChurchByEmail(admin_email)) error = 'That email already has an account. Please log in instead.';
   if (error) return res.status(400).send(views.setupPage({ values, error }));
   const church = db.createChurch({ ...c, slug: uniqueSlug(c.name, c.city), admin_email, password_hash: hashPassword(password) });
-  setSession(res, church.id);
+  setSession(res, church);
   res.redirect('/admin?welcome=1');
 });
 
-app.get('/login', (req, res) => res.send(views.loginPage()));
+const loginPage = (opts = {}) => views.loginPage({ ...opts, supportEmail: db.firstOwnerEmail() });
+app.get('/login', (req, res) => res.send(loginPage()));
 app.post('/login', (req, res) => {
   const email = String(req.body.email || '').trim().toLowerCase();
-  if (limited(`login:${req.ip}`, 10, 900_000)) return res.status(429).send(views.loginPage({ email, error: 'Too many tries. Please wait 15 minutes.' }));
+  if (limited(`login:${req.ip}`, 10, 900_000)) return res.status(429).send(loginPage({ email, error: 'Too many tries. Please wait 15 minutes.' }));
   const church = db.getChurchByEmail(email);
   if (!church || church.slug === 'demo' || !verifyPassword(String(req.body.password || ''), church.password_hash)) {
-    return res.status(401).send(views.loginPage({ email, error: 'That email and password don\'t match.' }));
+    return res.status(401).send(loginPage({ email, error: 'That email and password don\'t match.' }));
   }
-  setSession(res, church.id);
+  setSession(res, church);
   res.redirect('/admin');
 });
 app.post('/logout', (req, res) => { res.clearCookie('sid', { path: '/' }); res.redirect('/'); });
 
-app.get('/admin', requireLogin, async (req, res) => {
-  const church = req.church;
+async function renderAdmin(req, res, extra = {}, status = 200) {
+  const church = extra.church || req.church;
   const memberUrl = `${baseUrl(req)}/c/${church.slug}`;
   const html = views.adminPage({
     church, memberUrl, stats: db.checkStats(church.id), reports: db.listReports(church.id),
-    unseen: db.unseenReportCount(church.id), saved: req.query.saved === '1', welcome: req.query.welcome === '1', cleared: req.query.cleared === '1', qrSvg: await qrSvgFor(memberUrl),
+    unseen: db.unseenReportCount(church.id), qrSvg: await qrSvgFor(memberUrl),
+    saved: req.query.saved === '1', welcome: req.query.welcome === '1', cleared: req.query.cleared === '1', claimed: req.query.claimed === '1',
+    ...extra,
   });
   db.markReportsSeen(church.id);
-  res.send(html);
-});
+  res.status(status).send(html);
+}
+app.get('/admin', requireLogin, (req, res) => renderAdmin(req, res));
 app.post('/admin', requireLogin, async (req, res) => {
   const c = churchFromForm(req.body);
   const error = validateChurch(c);
-  if (error) {
-    const church = { ...req.church, ...c };
-    const memberUrl = `${baseUrl(req)}/c/${church.slug}`;
-    return res.status(400).send(views.adminPage({ church, memberUrl, stats: db.checkStats(church.id), reports: db.listReports(church.id), unseen: db.unseenReportCount(church.id), error, qrSvg: await qrSvgFor(memberUrl) }));
-  }
+  if (error) return renderAdmin(req, res, { church: { ...req.church, ...c }, error }, 400);
   db.updateChurch(req.church.id, c);
   res.redirect('/admin?saved=1');
+});
+
+// Hand the page to the church: make a one-time link for their office email.
+app.post('/admin/handoff', requireLogin, (req, res) => {
+  const email = String(req.body.email || '').trim().toLowerCase();
+  if (!validEmail(email)) return renderAdmin(req, res, { handoffError: 'Please enter the church office\'s email address.', handoffEmail: email }, 400);
+  if (emailTakenByOther(email, req.church.id)) return renderAdmin(req, res, { handoffError: 'That email is already the login for a different church on this site. Use another address.', handoffEmail: email }, 400);
+  renderAdmin(req, res, { handoffLink: makeLoginLink(req, req.church.id, email), handoffEmail: email });
+});
+
+// The church opens the link and picks its own password.
+app.get('/claim/:token', (req, res) => {
+  const invite = db.getInvite(tokenHash(req.params.token));
+  if (!invite) return res.status(404).send(views.claimPage({ expired: true, supportEmail: db.firstOwnerEmail() }));
+  res.send(views.claimPage({ church: db.getChurchById(invite.church_id), email: invite.email }));
+});
+app.post('/claim/:token', (req, res) => {
+  if (limited(`claim:${req.ip}`, 10, 900_000)) return res.status(429).send(views.claimPage({ expired: true, supportEmail: db.firstOwnerEmail() }));
+  const invite = db.getInvite(tokenHash(req.params.token));
+  if (!invite) return res.status(404).send(views.claimPage({ expired: true, supportEmail: db.firstOwnerEmail() }));
+  const church = db.getChurchById(invite.church_id);
+  const pw = String(req.body.password || '');
+  let error = '';
+  if (pw.length < 8) error = 'Your password needs at least 8 characters.';
+  else if (pw !== String(req.body.password2 || '')) error = 'The two passwords don\'t match. Please type them again.';
+  else if (emailTakenByOther(invite.email, church.id)) error = 'That email is already used by a different church. Ask for a new link with another email.';
+  if (error) return res.status(400).send(views.claimPage({ church, email: invite.email, error }));
+  db.setChurchLogin(church.id, invite.email, hashPassword(pw));
+  setSession(res, db.getChurchById(church.id));
+  res.redirect('/admin?claimed=1');
+});
+
+// ---------- owner (Steve) ----------
+app.get('/owner/setup', (req, res) => {
+  if (db.ownerCount()) return res.redirect('/owner/login');
+  res.send(views.ownerSetupPage({ ready: !!process.env.OWNER_SETUP_CODE }));
+});
+app.post('/owner/setup', (req, res) => {
+  if (db.ownerCount()) return res.redirect('/owner/login');
+  if (limited(`osetup:${req.ip}`, 8, 3_600_000)) return res.status(429).send(views.ownerSetupPage({ ready: true, error: 'Too many tries. Please wait an hour.' }));
+  const code = String(req.body.code || '').trim();
+  const want = String(process.env.OWNER_SETUP_CODE || '');
+  const email = String(req.body.email || '').trim().toLowerCase();
+  const pw = String(req.body.password || '');
+  let error = '';
+  if (!want || code.length !== want.length || !crypto.timingSafeEqual(Buffer.from(code), Buffer.from(want))) error = 'That setup code isn\'t right.';
+  else if (!validEmail(email)) error = 'Please enter a valid email.';
+  else if (pw.length < 10) error = 'Use at least 10 characters for the owner password.';
+  else if (pw !== String(req.body.password2 || '')) error = 'The two passwords don\'t match.';
+  if (error) return res.status(400).send(views.ownerSetupPage({ ready: !!want, error, email }));
+  db.createOwner(email, hashPassword(pw));
+  const owner = db.getOwnerByEmail(email);
+  setCookie(res, 'oid', owner.id, owner.session_version);
+  res.redirect('/owner');
+});
+app.get('/owner/login', (req, res) => {
+  if (!db.ownerCount()) return res.redirect('/owner/setup');
+  res.send(views.ownerLoginPage());
+});
+app.post('/owner/login', (req, res) => {
+  const email = String(req.body.email || '').trim().toLowerCase();
+  if (limited(`ologin:${req.ip}`, 8, 900_000)) return res.status(429).send(views.ownerLoginPage({ email, error: 'Too many tries. Please wait 15 minutes.' }));
+  const owner = db.getOwnerByEmail(email);
+  if (!owner || !verifyPassword(String(req.body.password || ''), owner.password_hash)) return res.status(401).send(views.ownerLoginPage({ email, error: 'That email and password don\'t match.' }));
+  setCookie(res, 'oid', owner.id, owner.session_version);
+  res.redirect('/owner');
+});
+app.post('/owner/logout', (req, res) => { res.clearCookie('oid', { path: '/' }); res.redirect('/owner/login'); });
+
+function renderOwner(req, res, extra = {}, status = 200) {
+  const churches = db.listChurchesForOwner().map(c => ({ ...c, memberUrl: `${baseUrl(req)}/c/${c.slug}` }));
+  res.status(status).send(views.ownerPage({ owner: req.owner, churches, saved: req.query.saved, plans: db.PLANS, ...extra }));
+}
+app.get('/owner', requireOwner, (req, res) => renderOwner(req, res));
+app.post('/owner/church/:id/billing', requireOwner, (req, res) => {
+  const id = Number(req.params.id);
+  if (!db.getChurchById(id)) return res.redirect('/owner');
+  const plan = db.PLANS.includes(req.body.plan) ? req.body.plan : 'trial';
+  const paidUntil = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.paid_until || '')) ? req.body.paid_until : '';
+  db.updateBilling(id, plan, paidUntil, String(req.body.owner_note || '').slice(0, 500));
+  res.redirect(`/owner?saved=${id}#church-${id}`);
+});
+app.post('/owner/church/:id/link', requireOwner, (req, res) => {
+  const church = db.getChurchById(Number(req.params.id));
+  if (!church || church.slug === 'demo') return res.redirect('/owner');
+  const email = String(req.body.email || '').trim().toLowerCase();
+  if (!validEmail(email)) return renderOwner(req, res, { linkFor: church.id, linkError: 'Enter the email the church should log in with.' }, 400);
+  if (emailTakenByOther(email, church.id)) return renderOwner(req, res, { linkFor: church.id, linkError: 'That email is the login for a different church.' }, 400);
+  renderOwner(req, res, { linkFor: church.id, link: makeLoginLink(req, church.id, email), linkEmail: email });
 });
 app.post('/admin/clear', requireLogin, (req, res) => {
   db.clearActivity(req.church.id);
