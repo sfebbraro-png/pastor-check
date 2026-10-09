@@ -1,5 +1,6 @@
 // HTML pages. Plain server-rendered HTML so it works on any phone or computer.
 import { formatPhone, digitsOnly } from './check.js';
+import { LEADER_TITLES } from './db.js';
 
 export const APP_NAME = process.env.APP_NAME || 'Is This Really Pastor?';
 
@@ -113,7 +114,8 @@ export function churchFields(c = {}, { isNew = true } = {}) {
   <div class="field"><label for="name">Church name</label><input type="text" id="name" name="name" value="${esc(c.name)}" required></div>
   <div class="grid2">
     <div class="field"><label for="city">City and state</label><input type="text" id="city" name="city" value="${esc(c.city)}" placeholder="Norfolk, VA"></div>
-    <div class="field"><label for="leader_title">What members call your pastor <span class="hint">Pastor, Father, Reverend</span></label><input type="text" id="leader_title" name="leader_title" value="${esc(c.leader_title || 'Pastor')}"></div>
+    <div class="field"><label for="leader_title">Your pastor's title <span class="hint">The word, not the name. You'll enter names below.</span></label>
+      <select id="leader_title" name="leader_title">${LEADER_TITLES.map(t => `<option${(c.leader_title || 'Pastor') === t ? ' selected' : ''}>${t}</option>`).join('')}</select></div>
   </div>
   <div class="grid2">
     <div class="field"><label for="office_phone">Church office phone <span class="hint">Shown to members as the number to call</span></label><input type="tel" id="office_phone" name="office_phone" value="${esc(c.office_phone ? formatPhone(c.office_phone) : '')}" required></div>

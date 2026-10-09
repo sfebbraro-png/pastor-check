@@ -49,10 +49,17 @@ CREATE INDEX IF NOT EXISTS idx_checks_church ON checks(church_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_reports_church ON reports(church_id, created_at);
 `);
 
+export const LEADER_TITLES = ['Pastor', 'Father', 'Reverend', 'Minister', 'Elder', 'Bishop', 'Rabbi'];
+export function cleanTitle(t) {
+  const hit = LEADER_TITLES.find(x => x.toLowerCase() === String(t || '').trim().toLowerCase());
+  return hit || 'Pastor';
+}
+
 function hydrate(row) {
   if (!row) return null;
   return {
     ...row,
+    leader_title: cleanTitle(row.leader_title),
     staff: JSON.parse(row.staff_json || '[]'),
     rules: JSON.parse(row.rules_json || '{}'),
   };

@@ -119,7 +119,7 @@ function churchFromForm(body) {
     office_phone: String(body.office_phone || '').trim().slice(0, 30),
     office_email: String(body.office_email || '').trim().toLowerCase().slice(0, 120),
     website: String(body.website || '').trim().slice(0, 200),
-    leader_title: (String(body.leader_title || '').trim() || 'Pastor').slice(0, 30),
+    leader_title: db.cleanTitle(body.leader_title),
     staff,
     rules: {
       noGiftCards: body.noGiftCards === 'on',
