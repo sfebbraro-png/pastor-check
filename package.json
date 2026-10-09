@@ -1,0 +1,20 @@
+{
+  "name": "pastor-check",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lets church members check whether a message really came from their pastor or church staff.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.js",
+    "test": "node --disable-warning=ExperimentalWarning test/run-tests.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.132.1",
+    "express": "^4.22.3",
+    "qrcode": "^1.5.4"
+  }
+}
