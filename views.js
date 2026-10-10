@@ -73,8 +73,8 @@ export function homePage() {
 </div></section>
 
 <section class="section"><div class="wrap center">
-  <h2>Free while we're in our pilot</h2>
-  <p class="muted">Setting up takes about five minutes.</p>
+  <h2>Free for your first month</h2>
+  <p class="muted">After that, $99 a year for your church. Setting up takes about five minutes.</p>
   <a class="btn" href="/setup">Set up your church</a>
 </div></section>`;
   return layout({ title: `${APP_NAME} Scam check for church members`, body, nav: publicNav, description: 'A simple page church members use to check whether a text or email really came from their pastor.' });
