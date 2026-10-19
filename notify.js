@@ -23,7 +23,7 @@ export async function sendEmail(to, subject, text) {
     // RESEND_API_BASE is only for the automated tests, which point at a stand-in Resend.
     const res = await fetch(`${process.env.RESEND_API_BASE || 'https://api.resend.com'}/emails`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${String(process.env.RESEND_API_KEY).trim()}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ from: fromLine(), to: [to], reply_to: supportEmail(), subject, text }),
     });
     if (!res.ok) { console.error('email failed', res.status, await res.text()); return false; }
