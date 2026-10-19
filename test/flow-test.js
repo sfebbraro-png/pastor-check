@@ -37,6 +37,18 @@ const fakeStripe = http.createServer((req, res) => {
   });
 });
 await new Promise(r => fakeStripe.listen(0, '127.0.0.1', r));
+
+// ---------- stand-in Resend: collects every email the app sends ----------
+const mail = [];
+const fakeResend = http.createServer((req, res) => {
+  let body = '';
+  req.on('data', d => { body += d; });
+  req.on('end', () => { mail.push(JSON.parse(body)); res.setHeader('Content-Type', 'application/json'); res.end('{"id":"email_1"}'); });
+});
+await new Promise(r => fakeResend.listen(0, '127.0.0.1', r));
+const RESEND = `http://127.0.0.1:${fakeResend.address().port}`;
+const mailTo = (to, has) => mail.filter(m => m.to[0] === to && (!has || (m.subject + m.text).includes(has)));
+const settle = () => new Promise(r => setTimeout(r, 300));
 const stripePort = fakeStripe.address().port;
 
 // ---------- the app ----------
@@ -44,8 +56,8 @@ const PORT = 3900 + Math.floor(Math.random() * 90);
 const BASE = `http://127.0.0.1:${PORT}`;
 const env = { ...process.env, PORT: String(PORT), DATA_DIR: path.join(tmp, 'app'), OWNER_SETUP_CODE: 'flow-code-123',
   STRIPE_SECRET_KEY: 'sk_test_flow', STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET, STRIPE_API_BASE: `http://127.0.0.1:${stripePort}`,
-  NODE_ENV: 'test', PUBLIC_URL: BASE };
-delete env.ANTHROPIC_API_KEY; delete env.RESEND_API_KEY;
+  NODE_ENV: 'test', PUBLIC_URL: BASE, RESEND_API_KEY: 're_test', RESEND_API_BASE: RESEND };
+delete env.ANTHROPIC_API_KEY; delete env.SUPPORT_EMAIL; delete env.NOTIFY_EMAIL; delete env.EMAIL_FROM;
 const server = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'server.js'], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
 let serverLog = '';
 server.stdout.on('data', d => { serverLog += d; });
@@ -95,6 +107,12 @@ await step('a church can ask to get started', async () => {
   assert.equal(bad.status, 400);
   const r = await member.go('/start', { method: 'POST', form: { church_name: 'First Church Flowtown', city: 'Flowtown, VA', contact_name: 'Linda Flow', contact_role: 'Secretary', email: 'linda@firstflow.org', phone: '757-555-0199', note: 'Saw it at a meeting' } });
   assert.ok(r.text.includes('We got your request'));
+  await settle();
+  const toChurch = mailTo('linda@firstflow.org', 'We got your request');
+  assert.equal(toChurch.length, 1);
+  assert.equal(toChurch[0].from, 'Is This Really Pastor <steve@isthisreallypastor.com>');
+  assert.equal(toChurch[0].reply_to, 'steve@isthisreallypastor.com');
+  assert.equal(mailTo('steve@isthisreallypastor.com', 'New church request: First Church Flowtown').length, 1);
 });
 await step('spam bots filling the hidden field are ignored', async () => {
   const r = await member.go('/start', { method: 'POST', form: { church_name: 'Spam', contact_name: 'Bot', email: 'bot@spam.com', website_url: 'http://spam' } });
@@ -140,9 +158,13 @@ await step('Steve\'s own test check counts as an office test, not a member', asy
   assert.ok(o.text.includes('none yet'));
   assert.ok(!o.text.includes('first member check'));
 });
-await step('Steve makes the hand-off link', async () => {
+await step('Steve sends the hand-off link and the office gets it by email', async () => {
   const r = await steve.go('/admin/handoff', { method: 'POST', form: { email: 'office@firstflow.org' } });
-  claimLink = r.text.match(/\/claim\/[A-Za-z0-9_-]+/)[0];
+  assert.ok(r.text.includes('We emailed the link to office@firstflow.org'));
+  const m = mailTo('office@firstflow.org', 'is ready');
+  assert.equal(m.length, 1);
+  claimLink = m[0].text.match(/\/claim\/[A-Za-z0-9_-]+/)[0];
+  assert.ok(m[0].text.includes('free month starts the day you choose your password'));
 });
 await step('church office takes over and the free month starts', async () => {
   const r = await office.go(claimLink, { method: 'POST', form: { password: 'officepass1', password2: 'officepass1' } });
@@ -152,6 +174,11 @@ await step('church office takes over and the free month starts', async () => {
   assert.ok(a.text.includes('action="/admin/pay"'));
   const o = await steve.go('/owner');
   assert.ok(o.text.includes('free month') && o.text.includes('opened your link and chose a password'));
+  await settle();
+  const w = mailTo('office@firstflow.org', 'Your page is ready');
+  assert.equal(w.length, 1);
+  assert.ok(w[0].text.includes(`/c/${slug}/flyer`) && w[0].text.includes('free month runs until'));
+  assert.equal(mailTo('steve@isthisreallypastor.com', 'took over its page').length, 1);
 });
 await step('Steve can\'t open the dashboard after hand-off (reports are private)', async () => {
   const o = await steve.go('/owner');
@@ -165,6 +192,8 @@ await step('first member check tells Steve, once', async () => {
   const o = await steve.go('/owner');
   assert.equal(o.text.split('just checked a message for the first time').length - 1, 1);
   assert.ok(o.text.includes('Member checks: 2 in the last 30 days'));
+  await settle();
+  assert.equal(mailTo('steve@isthisreallypastor.com', 'first member check').length, 1);
 });
 await step('office pays by card: goes to Stripe checkout for $99 a year', async () => {
   const r = await office.go('/admin/pay', { method: 'POST' });
@@ -193,6 +222,13 @@ await step('Stripe payment marks the church paid for a year', async () => {
   assert.ok(o.text.includes('paid $99 by card'));
   const a = await office.go('/admin?paid=1');
   assert.ok(a.text.includes('Your payment went through') && a.text.includes('Renews automatically by card'));
+  assert.equal(mailTo('steve@isthisreallypastor.com', 'paid $99 by card').length, 1);
+});
+await step('a failed card payment emails the office and Steve', async () => {
+  const r = await sendEvent({ id: 'evt_fail_1', object: 'event', type: 'invoice.payment_failed', data: { object: { id: 'in_1', object: 'invoice', parent: { subscription_details: { subscription: 'sub_test_1' } } } } });
+  assert.equal(r.status, 200);
+  assert.equal(mailTo('office@firstflow.org', "didn't go through").length, 1);
+  assert.equal(mailTo('steve@isthisreallypastor.com', 'card payment failed').length, 1);
 });
 await step('the same Stripe message twice is only handled once', async () => {
   assert.equal((await sendEvent(paidEvent)).text, 'already handled');
@@ -231,6 +267,14 @@ await step('the demo always works and never counts', async () => {
   assert.ok((await member.go('/c/demo')).text.includes('id="checkForm"'));
   assert.equal((await member.go('/api/c/demo/check', { method: 'POST', json: scam })).status, 200);
 });
+await step('Steve can email a new login link from the owner page', async () => {
+  const r = await steve.go('/owner/church/2/link', { method: 'POST', form: { email: 'office@firstflow.org' } });
+  assert.ok(r.text.includes('We emailed this link to office@firstflow.org'));
+  assert.equal(mailTo('office@firstflow.org', 'Your new login link').length, 1);
+});
+await step('nothing the app sends asks Steve to phone anyone', async () => {
+  for (const m of mail.filter(x => x.to[0] === 'steve@isthisreallypastor.com')) assert.ok(!/\bcall\b/i.test(m.text), m.subject);
+});
 await step('deleting needs the exact church name', async () => {
   await steve.go('/owner/church/2/delete', { method: 'POST', form: { confirm_name: 'wrong' } });
   assert.equal((await member.go(`/c/${slug}`)).status, 200);
@@ -241,10 +285,12 @@ await step('deleting needs the exact church name', async () => {
 
 server.kill();
 fakeStripe.close();
+mail.length = 0;
 
 // ---------- the hourly sweep, with the clock moved forward ----------
 process.env.DATA_DIR = path.join(tmp, 'sweep');
-delete process.env.RESEND_API_KEY;
+process.env.RESEND_API_KEY = 're_test'; process.env.RESEND_API_BASE = RESEND;
+delete process.env.SUPPORT_EMAIL; delete process.env.NOTIFY_EMAIL; delete process.env.EMAIL_FROM;
 const db = await import('../db.js');
 const { sweep } = await import('../notify.js');
 const DAY = 86400000;
@@ -271,17 +317,21 @@ await step('5 days before the end: "free month ending" notice, sent once', async
   await sweep(new Date(t0.getTime() + 26 * DAY));
   await sweep(new Date(t0.getTime() + 27 * DAY));
   assert.deepEqual(events().filter(e => e.startsWith('trial_soon')), ['trial_soon:Sweep One']);
+  assert.equal(mailTo('SweepOne@x.org', 'Your free month ends').length, 1);
 });
 await step('after the month: grace notice, once', async () => {
   await sweep(new Date(t0.getTime() + 31 * DAY));
   await sweep(new Date(t0.getTime() + 33 * DAY));
   assert.deepEqual(events().filter(e => e.startsWith('grace')), ['grace:Sweep One']);
+  assert.equal(mailTo('SweepOne@x.org', 'pauses').length, 1);
   assert.equal(db.pageIsOn(db.getChurchById(1)), true);
 });
 await step('after the grace week: paused notice, once, and the page is off', async () => {
   await sweep(new Date(t0.getTime() + 38 * DAY));
   await sweep(new Date(t0.getTime() + 40 * DAY));
   assert.deepEqual(events().filter(e => e.startsWith('paused')), ['paused:Sweep One']);
+  assert.equal(mailTo('SweepOne@x.org', 'is paused').length, 1);
+  assert.equal(mailTo('steve@isthisreallypastor.com').length, 3);
   assert.equal(db.accessState(db.getChurchById(1), new Date(t0.getTime() + 38 * DAY)).state, 'paused');
 });
 await step('a church Steve set up but hasn\'t handed off has no clock', async () => {
@@ -295,6 +345,7 @@ await step('paid by card through a date: grace after it lapses, then paused', as
   assert.equal(db.accessState(c, new Date(t0.getTime() + 19 * DAY)).state, 'paused');
 });
 
+fakeResend.close();
 fs.rmSync(tmp, { recursive: true, force: true });
 if (failures) { console.log(`\n${failures} failed.\n--- server log ---\n${serverLog}`); process.exit(1); }
 console.log('\nAll flow steps passed.');

@@ -154,7 +154,7 @@ export function requestPage({ values = {}, error = '', sent = false } = {}) {
   const body = sent ? `
 <div class="wrap section" style="max-width:620px">
   <h1>Thank you. We got your request.</h1>
-  <p>We'll be in touch within a day or two to set up your church's page. Your free month starts when your office takes it over.</p>
+  <p>We'll email you within a day or two to set up your church's page. Your free month starts when your office takes it over.</p>
   <p>In the meantime, <a href="/c/demo">try the demo</a> with a text you've received.</p>
 </div>` : `
 <div class="wrap section" style="max-width:620px">
@@ -285,7 +285,7 @@ function stateLine(c) {
   }
 }
 
-export function ownerPage({ owner, churches, plans, saved, linkFor, link, linkEmail, linkError, requests = [], events = [], setup = {}, deleted = false }) {
+export function ownerPage({ owner, churches, plans, saved, linkFor, link, linkEmail, linkError, linkSent = false, requests = [], events = [], setup = {}, deleted = false }) {
   const real = churches.filter(c => c.slug !== 'demo');
   const count = st => real.filter(c => c.access.state === st).length;
   const dateInput = s => (s ? String(s).slice(0, 10) : '');
@@ -293,7 +293,7 @@ export function ownerPage({ owner, churches, plans, saved, linkFor, link, linkEm
   const setupHtml = (!setup.email || !setup.stripe) ? `
   <div class="notice">
     <strong>Still to switch on:</strong>
-    ${!setup.email ? '<p style="margin:8px 0 0">Email notices are off. Until they\'re on, check "What\'s happened" at the bottom of this page.</p>' : ''}
+    ${!setup.email ? '<p style="margin:8px 0 0">Email is off: no notices to you and no emails to churches. Until it\'s on, check "What\'s happened" at the bottom of this page and send hand-off links yourself.</p>' : ''}
     ${!setup.stripe ? '<p style="margin:8px 0 0">Card payments are off. Churches see your email address instead of a Pay button.</p>' : ''}
   </div>` : '';
 
@@ -331,13 +331,13 @@ export function ownerPage({ owner, churches, plans, saved, linkFor, link, linkEm
       <div><button class="btn secondary" type="submit">Save</button></div>
     </form>
     <details style="margin-top:12px" ${linkFor === c.id ? 'open' : ''}>
-      <summary>${c.handed_off_at ? 'Make a new login link' : 'Make the hand-off link'}</summary>
+      <summary>${c.handed_off_at ? 'Email a new login link' : 'Email the hand-off link'}</summary>
       <p class="small">${c.handed_off_at ? 'Use this when a church forgets its password or needs to change who logs in.' : 'Send this to the church office. When they open it and choose a password, the page is theirs and their free month starts.'} The link works once, for 7 days.</p>
       ${linkFor === c.id && linkError ? `<div class="error" role="alert">${esc(linkError)}</div>` : ''}
-      ${linkFor === c.id && link ? `<div class="notice"><strong>Send this link to ${esc(linkEmail)}:</strong><div class="linkbox" style="margin-top:8px"><code id="link-${c.id}">${esc(link)}</code><button class="btn secondary" type="button" onclick="navigator.clipboard.writeText(document.getElementById('link-${c.id}').textContent).then(()=>{this.textContent='Copied'})">Copy</button></div></div>` : ''}
+      ${linkFor === c.id && link ? `<div class="notice"><strong>${linkSent ? `We emailed this link to ${esc(linkEmail)}:` : `Email isn't working yet, so send this link to ${esc(linkEmail)} yourself:`}</strong><div class="linkbox" style="margin-top:8px"><code id="link-${c.id}">${esc(link)}</code><button class="btn secondary" type="button" onclick="navigator.clipboard.writeText(document.getElementById('link-${c.id}').textContent).then(()=>{this.textContent='Copied'})">Copy</button></div></div>` : ''}
       <form method="post" action="/owner/church/${c.id}/link" class="linkbox">
         <input type="email" name="email" value="${esc(linkFor === c.id && linkEmail ? linkEmail : (c.pendingLogin ? '' : c.admin_email))}" placeholder="office@theirchurch.org" aria-label="Email the church will log in with" style="flex:1 1 260px" autocapitalize="off">
-        <button class="btn" type="submit">Make link</button>
+        <button class="btn" type="submit">Email link</button>
       </form>
     </details>
     <details style="margin-top:12px">
@@ -410,19 +410,19 @@ function billingBox(church, access, billing, paidJustNow) {
   }
 }
 
-export function adminPage({ church, memberUrl, stats, reports, unseen, saved = false, welcome = false, cleared = false, claimed = false, paid = false, access = { state: 'paid' }, billing = {}, error = '', qrSvg, handoffLink = '', handoffEmail = '', handoffError = '' }) {
+export function adminPage({ church, memberUrl, stats, reports, unseen, saved = false, welcome = false, cleared = false, claimed = false, paid = false, access = { state: 'paid' }, billing = {}, error = '', qrSvg, handoffLink = '', handoffEmail = '', handoffError = '', handoffSent = false }) {
   const handedOff = !!church.handed_off_at;
   const handoffHtml = `
   <details class="card" style="margin-bottom:24px" ${handoffLink || handoffError ? 'open' : ''}>
     <summary>${handedOff ? 'Change who logs in' : 'Hand this page to the church'}</summary>
     <p style="margin-top:12px">${handedOff
-      ? 'Use this when a new person takes over the church office. Enter their email, then send them the link. When they choose a password, this login stops working.'
-      : 'Enter the church office\'s email address and send them the link this makes. When they open it and choose a password, the page is theirs and this login stops working. Their members\' page and QR code stay exactly the same.'}</p>
+      ? 'Use this when a new person takes over the church office. Enter their email and we\'ll email them a link. When they choose a password, the old login stops working.'
+      : 'Enter the church office\'s email address and we\'ll email them a link. When they open it and choose a password, the page is theirs, their free month starts, and this setup login stops working. Their members\' page and QR code stay exactly the same.'}</p>
     ${handoffError ? `<div class="error" role="alert">${esc(handoffError)}</div>` : ''}
-    ${handoffLink ? `<div class="notice"><strong>Send this link to ${esc(handoffEmail)}.</strong> It works once, for 7 days.<div class="linkbox" style="margin-top:8px"><code id="handoffLink">${esc(handoffLink)}</code><button class="btn secondary" type="button" onclick="navigator.clipboard.writeText(document.getElementById('handoffLink').textContent).then(()=>{this.textContent='Copied'})">Copy link</button></div></div>` : ''}
+    ${handoffLink ? `<div class="notice"><strong>${handoffSent ? `We emailed the link to ${esc(handoffEmail)}.` : `Email isn't working yet, so send this link to ${esc(handoffEmail)} yourself.`}</strong> It works once, for 7 days.${handoffSent ? ' Here it is too, in case they need it again:' : ''}<div class="linkbox" style="margin-top:8px"><code id="handoffLink">${esc(handoffLink)}</code><button class="btn secondary" type="button" onclick="navigator.clipboard.writeText(document.getElementById('handoffLink').textContent).then(()=>{this.textContent='Copied'})">Copy link</button></div></div>` : ''}
     <form method="post" action="/admin/handoff" class="linkbox">
       <input type="email" name="email" value="${esc(handoffEmail)}" placeholder="office@theirchurch.org" aria-label="Church office email" required autocapitalize="off" style="flex:1 1 260px">
-      <button class="btn" type="submit">Make the link</button>
+      <button class="btn" type="submit">Email the link</button>
     </form>
   </details>`;
   const reportHtml = reports.length ? reports.map(r => `

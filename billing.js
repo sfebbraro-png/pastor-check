@@ -5,7 +5,7 @@
 //   STRIPE_PRICE_CENTS     - optional, defaults to 9900 ($99.00)
 import Stripe from 'stripe';
 import * as db from './db.js';
-import { notify } from './notify.js';
+import { notify, toChurch } from './notify.js';
 
 // STRIPE_API_BASE is only for the automated tests, which point at a stand-in Stripe server.
 const testBase = process.env.STRIPE_API_BASE ? new URL(process.env.STRIPE_API_BASE) : null;
@@ -95,7 +95,7 @@ export async function handleWebhook(rawBody, signature) {
     const subId = subscriptionIdOf(o);
     const church = subId ? churchForSubscription(await stripe.subscriptions.retrieve(subId)) : null;
     if (church) await notify(church.id, 'payment_failed', `${church.name}: card payment failed`,
-      `Stripe couldn't charge ${church.name}'s card. Stripe will try again over the next few days. You may want to call the office at ${church.office_phone}.`, `failed:${event.id}`);
+      `Stripe couldn't charge ${church.name}'s card. Stripe will try again over the next few days.`, `failed:${event.id}`, toChurch.paymentFailed(church));
   }
 
   if (event.type === 'customer.subscription.deleted') {

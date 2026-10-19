@@ -6,7 +6,7 @@ import QRCode from 'qrcode';
 import * as db from './db.js';
 import { checkMessage, digitsOnly, formatPhone, aiAvailable } from './check.js';
 import * as views from './views.js';
-import { notify, startSweeper, emailReady } from './notify.js';
+import { notify, startSweeper, emailReady, sendEmail, supportEmail, toChurch, SITE } from './notify.js';
 import { stripeReady, checkoutUrl, handleWebhook, priceText } from './billing.js';
 
 const app = express();
@@ -102,6 +102,14 @@ function makeLoginLink(req, churchId, email) {
   const token = crypto.randomBytes(24).toString('base64url');
   db.createInvite(churchId, email, tokenHash(token), 7);
   return `${baseUrl(req)}/claim/${token}`;
+}
+// Email the hand-off (or new password) link straight to the church office.
+async function emailLoginLink(church, email, link) {
+  const first = !church.handed_off_at;
+  return sendEmail(email, first ? `Your church's message checker is ready: ${church.name}` : `Your new login link: ${church.name}`,
+    `Hello,\n\n${first
+      ? `${church.name}'s page on Is This Really Pastor? is set up and ready for you. Members use it to check whether a text or email really came from the pastor or church staff.\n\nTo take it over, open this link and choose a password for your church office:`
+      : `Here is a link to choose a new password for ${church.name}'s church office login:`}\n\n${link}\n\nThe link works once and lasts 7 days. After that, you'll log in at ${SITE()}/login with ${email}.${first ? '\n\nYour free month starts the day you choose your password. After that, it is $99 a year, paid by card from your dashboard.' : ''}\n\nQuestions? Just reply to this email.\n\nSteve Febbraro\nIs This Really Pastor?\n${supportEmail()}`);
 }
 const validEmail = e => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e);
 function emailTakenByOther(email, churchId) {
@@ -240,10 +248,12 @@ app.post('/start', async (req, res) => {
   db.addRequest(r);
   await notify(null, 'request', `New church request: ${r.church_name}`,
     `${r.contact_name}${r.contact_role ? ` (${r.contact_role})` : ''} asked to get started.\nChurch: ${r.church_name}${r.city ? `, ${r.city}` : ''}\nEmail: ${r.email}${r.phone ? `\nPhone: ${r.phone}` : ''}${r.note ? `\nNote: ${r.note}` : ''}\n\nTo set them up, open the owner page and press "Set up this church" on their request.`);
+  sendEmail(r.email, 'We got your request: Is This Really Pastor?',
+    `Hello ${r.contact_name},\n\nThank you for asking about Is This Really Pastor? for ${r.church_name}. I'll email you within a day or two to set up your church's page.\n\nIn the meantime, you can try the demo with any suspicious text you've received: ${SITE()}/c/demo\n\nSteve Febbraro\nIs This Really Pastor?\n${supportEmail()}`).catch(() => {});
   res.send(views.requestPage({ sent: true }));
 });
 
-const loginPage = (opts = {}) => views.loginPage({ ...opts, supportEmail: db.firstOwnerEmail() });
+const loginPage = (opts = {}) => views.loginPage({ ...opts, supportEmail: supportEmail() });
 app.get('/login', (req, res) => res.send(loginPage()));
 app.post('/login', (req, res) => {
   const email = String(req.body.email || '').trim().toLowerCase();
@@ -265,7 +275,7 @@ async function renderAdmin(req, res, extra = {}, status = 200) {
     unseen: db.unseenReportCount(church.id), qrSvg: await qrSvgFor(memberUrl),
     saved: req.query.saved === '1', welcome: req.query.welcome === '1', cleared: req.query.cleared === '1', claimed: req.query.claimed === '1',
     paid: req.query.paid === '1', access: db.accessState(db.getChurchById(church.id)),
-    billing: { stripe: stripeReady(), price: priceText(), supportEmail: db.firstOwnerEmail(), isOwner: !!readOwner(req) },
+    billing: { stripe: stripeReady(), price: priceText(), supportEmail: supportEmail(), isOwner: !!readOwner(req) },
     ...extra,
   });
   db.markReportsSeen(church.id);
@@ -281,11 +291,13 @@ app.post('/admin', requireLogin, async (req, res) => {
 });
 
 // Hand the page to the church: make a one-time link for their office email.
-app.post('/admin/handoff', requireLogin, (req, res) => {
+app.post('/admin/handoff', requireLogin, async (req, res) => {
   const email = String(req.body.email || '').trim().toLowerCase();
   if (!validEmail(email)) return renderAdmin(req, res, { handoffError: 'Please enter the church office\'s email address.', handoffEmail: email }, 400);
   if (emailTakenByOther(email, req.church.id)) return renderAdmin(req, res, { handoffError: 'That email is already the login for a different church on this site. Use another address.', handoffEmail: email }, 400);
-  renderAdmin(req, res, { handoffLink: makeLoginLink(req, req.church.id, email), handoffEmail: email });
+  const link = makeLoginLink(req, req.church.id, email);
+  const sent = await emailLoginLink(req.church, email, link);
+  renderAdmin(req, res, { handoffLink: link, handoffEmail: email, handoffSent: sent });
 });
 
 // The church pays by card: off to Stripe's payment page.
@@ -302,13 +314,13 @@ app.post('/admin/pay', requireLogin, async (req, res) => {
 // The church opens the link and picks its own password.
 app.get('/claim/:token', (req, res) => {
   const invite = db.getInvite(tokenHash(req.params.token));
-  if (!invite) return res.status(404).send(views.claimPage({ expired: true, supportEmail: db.firstOwnerEmail() }));
+  if (!invite) return res.status(404).send(views.claimPage({ expired: true, supportEmail: supportEmail() }));
   res.send(views.claimPage({ church: db.getChurchById(invite.church_id), email: invite.email }));
 });
 app.post('/claim/:token', async (req, res) => {
-  if (limited(`claim:${req.ip}`, 10, 900_000)) return res.status(429).send(views.claimPage({ expired: true, supportEmail: db.firstOwnerEmail() }));
+  if (limited(`claim:${req.ip}`, 10, 900_000)) return res.status(429).send(views.claimPage({ expired: true, supportEmail: supportEmail() }));
   const invite = db.getInvite(tokenHash(req.params.token));
-  if (!invite) return res.status(404).send(views.claimPage({ expired: true, supportEmail: db.firstOwnerEmail() }));
+  if (!invite) return res.status(404).send(views.claimPage({ expired: true, supportEmail: supportEmail() }));
   const church = db.getChurchById(invite.church_id);
   const pw = String(req.body.password || '');
   let error = '';
@@ -322,6 +334,7 @@ app.post('/claim/:token', async (req, res) => {
   setSession(res, now);
   if (firstHandoff) {
     const s = db.accessState(now);
+    sendEmail(invite.email, toChurch.welcome(now, s.endsAt).subject, toChurch.welcome(now, s.endsAt).text).catch(() => {});
     await notify(church.id, 'handoff', `${church.name} took over its page`,
       `${church.name} opened your link and chose a password. They log in with ${invite.email}.${s.state === 'trial' ? ` Their free month runs until ${s.endsAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'America/New_York' })}.` : ''}`, 'handoff');
   }
@@ -423,13 +436,15 @@ app.post('/owner/church/:id/billing', requireOwner, (req, res) => {
   db.updateBilling(id, plan, paidUntil, trialEnds, String(req.body.owner_note || '').slice(0, 500));
   res.redirect(`/owner?saved=${id}#church-${id}`);
 });
-app.post('/owner/church/:id/link', requireOwner, (req, res) => {
+app.post('/owner/church/:id/link', requireOwner, async (req, res) => {
   const church = db.getChurchById(Number(req.params.id));
   if (!church || church.slug === 'demo') return res.redirect('/owner');
   const email = String(req.body.email || '').trim().toLowerCase();
   if (!validEmail(email)) return renderOwner(req, res, { linkFor: church.id, linkError: 'Enter the email the church should log in with.' }, 400);
   if (emailTakenByOther(email, church.id)) return renderOwner(req, res, { linkFor: church.id, linkError: 'That email is the login for a different church.' }, 400);
-  renderOwner(req, res, { linkFor: church.id, link: makeLoginLink(req, church.id, email), linkEmail: email });
+  const link = makeLoginLink(req, church.id, email);
+  const sent = await emailLoginLink(church, email, link);
+  renderOwner(req, res, { linkFor: church.id, link, linkEmail: email, linkSent: sent });
 });
 app.post('/admin/clear', requireLogin, (req, res) => {
   db.clearActivity(req.church.id);

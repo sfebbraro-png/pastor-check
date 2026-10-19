@@ -10,7 +10,9 @@ The free month (30 days) starts when the office takes over. After it ends there 
 (it tells members to call the office instead). Paying by card through Stripe ($99 a year, renews automatically) turns it on right away.
 The owner can also mark a church paid by hand, change the free-month end date, or delete test churches.
 
-The owner gets notices (on `/owner` under "What's happened", and by email once Resend is set up) for: a new request,
+Everything happens by email. The app emails the church office its hand-off link, a welcome with its members' link and flyer,
+a reminder 5 days before the free month ends, a grace-week notice, a paused notice, and failed-payment notices. Stripe sends the receipts.
+A church that sends a request gets an automatic reply. The owner gets notices (on `/owner` under "What's happened", and by email once Resend is set up) for: a new request,
 a church taking over its page, a church's first member check, 5 days left in a free month, free month over, page paused,
 card payment, renewal, failed payment, and cancellation. Checks made while logged in as the church office or the owner count as tests.
 
@@ -43,8 +45,10 @@ card payment, renewal, failed payment, and cancellation. Checks made while logge
   - optional `ANTHROPIC_WORKSPACE_ID` (starts with `wrkspc_`), only needed if the API key isn't tied to a workspace
   - optional `ANTHROPIC_MODEL` to change the AI model (default `claude-haiku-5-5`)
   - `OWNER_SETUP_CODE` lets the owner account be created once at `/owner/setup`
-  - `RESEND_API_KEY` turns on email notices (from resend.com). `NOTIFY_EMAIL` sets where they go (default: owner login email).
-    Without your own domain verified in Resend, notices can only go to the email you signed up to Resend with. Optional `EMAIL_FROM` once a domain is verified.
+  - `RESEND_API_KEY` turns on all email (from resend.com, with the isthisreallypastor.com domain verified there).
+    Email is sent as steve@isthisreallypastor.com, and replies go to that Namecheap mailbox.
+    Optional `SUPPORT_EMAIL` (default steve@isthisreallypastor.com), `NOTIFY_EMAIL` (where notices to the owner go, default SUPPORT_EMAIL), `EMAIL_FROM`.
+    Railway's Hobby plan blocks sending through a mailbox directly (SMTP), which is why the app uses Resend.
   - `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` turn on card payments. In Stripe, add a webhook to
     `https://isthisreallypastor.com/stripe/webhook` for these events: `checkout.session.completed`, `invoice.paid`,
     `invoice.payment_failed`, `customer.subscription.deleted`. Optional `STRIPE_PRICE_CENTS` (default 9900).
