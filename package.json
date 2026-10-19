@@ -7,7 +7,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning server.js",
-    "test": "node --disable-warning=ExperimentalWarning test/run-tests.js"
+    "test": "node --disable-warning=ExperimentalWarning test/run-tests.js",
+    "test:flow": "node --disable-warning=ExperimentalWarning test/flow-test.js"
   },
   "engines": {
     "node": ">=22.13"
@@ -15,6 +16,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.132.1",
     "express": "^4.22.3",
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "stripe": "^23.0.0"
   }
 }

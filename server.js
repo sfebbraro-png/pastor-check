@@ -6,6 +6,8 @@ import QRCode from 'qrcode';
 import * as db from './db.js';
 import { checkMessage, digitsOnly, formatPhone, aiAvailable } from './check.js';
 import * as views from './views.js';
+import { notify, startSweeper, emailReady } from './notify.js';
+import { stripeReady, checkoutUrl, handleWebhook, priceText } from './billing.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -18,12 +20,23 @@ app.use((req, res, next) => {
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'same-origin',
     'X-Frame-Options': 'DENY',
-    'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+    'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'self' https://checkout.stripe.com; frame-ancestors 'none'",
   });
   next();
 });
 
 app.use(express.static(path.join(process.cwd(), 'public'), { maxAge: '1h' }));
+
+// Stripe tells us about payments here. It needs the raw body, so it comes before the other parsers.
+app.post('/stripe/webhook', express.raw({ type: 'application/json', limit: '1mb' }), async (req, res) => {
+  try {
+    const r = await handleWebhook(req.body, req.get('stripe-signature'));
+    res.status(r.status).send(r.text);
+  } catch (err) {
+    console.error('stripe webhook failed', err);
+    res.status(500).send('error');
+  }
+});
 app.use('/api', express.json({ limit: '6mb' }));
 app.use(express.urlencoded({ extended: false, limit: '100kb' }));
 
@@ -201,21 +214,33 @@ ensureDemo();
 app.get('/', (req, res) => res.send(views.homePage()));
 app.get('/health', (req, res) => res.json({ ok: true, ai: aiAvailable() }));
 
-app.get('/setup', (req, res) => res.send(views.setupPage()));
-app.post('/setup', (req, res) => {
-  if (limited(`setup:${req.ip}`, 10, 3_600_000)) return res.status(429).send(views.setupPage({ error: 'Too many tries. Please wait an hour and try again.' }));
-  const c = churchFromForm(req.body);
-  const admin_email = String(req.body.admin_email || '').trim().toLowerCase();
-  const password = String(req.body.password || '');
-  const values = { ...c, admin_email };
-  let error = validateChurch(c);
-  if (!error && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(admin_email)) error = 'Please enter a valid login email.';
-  if (!error && password.length < 8) error = 'Your password needs at least 8 characters.';
-  if (!error && db.getChurchByEmail(admin_email)) error = 'That email already has an account. Please log in instead.';
-  if (error) return res.status(400).send(views.setupPage({ values, error }));
-  const church = db.createChurch({ ...c, slug: uniqueSlug(c.name, c.city), admin_email, password_hash: hashPassword(password) });
-  setSession(res, church);
-  res.redirect('/admin?welcome=1');
+// Churches can't sign themselves up. They try the demo, then ask; Steve sets them up.
+app.get('/setup', (req, res) => res.redirect(readOwner(req) ? '/owner/new' : '/start'));
+app.post('/setup', (req, res) => res.redirect(303, '/start'));
+
+app.get('/start', (req, res) => res.send(views.requestPage()));
+app.post('/start', async (req, res) => {
+  const b = req.body;
+  const r = {
+    church_name: String(b.church_name || '').trim().slice(0, 120),
+    city: String(b.city || '').trim().slice(0, 80),
+    contact_name: String(b.contact_name || '').trim().slice(0, 80),
+    contact_role: String(b.contact_role || '').trim().slice(0, 80),
+    email: String(b.email || '').trim().toLowerCase().slice(0, 120),
+    phone: String(b.phone || '').trim().slice(0, 30),
+    note: String(b.note || '').trim().slice(0, 1000),
+  };
+  if (String(b.website_url || '')) return res.send(views.requestPage({ sent: true })); // filled only by spam bots
+  let error = '';
+  if (!r.church_name) error = 'Please enter your church name.';
+  else if (!r.contact_name) error = 'Please enter your name.';
+  else if (!validEmail(r.email)) error = 'Please enter an email address we can reach you at.';
+  if (error) return res.status(400).send(views.requestPage({ values: r, error }));
+  if (limited(`start:${req.ip}`, 5, 3_600_000)) return res.status(429).send(views.requestPage({ values: r, error: 'Too many requests. Please wait an hour and try again.' }));
+  db.addRequest(r);
+  await notify(null, 'request', `New church request: ${r.church_name}`,
+    `${r.contact_name}${r.contact_role ? ` (${r.contact_role})` : ''} asked to get started.\nChurch: ${r.church_name}${r.city ? `, ${r.city}` : ''}\nEmail: ${r.email}${r.phone ? `\nPhone: ${r.phone}` : ''}${r.note ? `\nNote: ${r.note}` : ''}\n\nTo set them up, open the owner page and press "Set up this church" on their request.`);
+  res.send(views.requestPage({ sent: true }));
 });
 
 const loginPage = (opts = {}) => views.loginPage({ ...opts, supportEmail: db.firstOwnerEmail() });
@@ -239,6 +264,8 @@ async function renderAdmin(req, res, extra = {}, status = 200) {
     church, memberUrl, stats: db.checkStats(church.id), reports: db.listReports(church.id),
     unseen: db.unseenReportCount(church.id), qrSvg: await qrSvgFor(memberUrl),
     saved: req.query.saved === '1', welcome: req.query.welcome === '1', cleared: req.query.cleared === '1', claimed: req.query.claimed === '1',
+    paid: req.query.paid === '1', access: db.accessState(db.getChurchById(church.id)),
+    billing: { stripe: stripeReady(), price: priceText(), supportEmail: db.firstOwnerEmail(), isOwner: !!readOwner(req) },
     ...extra,
   });
   db.markReportsSeen(church.id);
@@ -261,13 +288,24 @@ app.post('/admin/handoff', requireLogin, (req, res) => {
   renderAdmin(req, res, { handoffLink: makeLoginLink(req, req.church.id, email), handoffEmail: email });
 });
 
+// The church pays by card: off to Stripe's payment page.
+app.post('/admin/pay', requireLogin, async (req, res) => {
+  if (!stripeReady()) return renderAdmin(req, res, { error: 'Card payments aren\'t turned on yet. Please contact us to pay.' }, 400);
+  try {
+    res.redirect(303, await checkoutUrl(req.church, baseUrl(req)));
+  } catch (err) {
+    console.error('checkout failed', err);
+    renderAdmin(req, res, { error: 'We couldn\'t open the payment page. Please try again in a minute.' }, 500);
+  }
+});
+
 // The church opens the link and picks its own password.
 app.get('/claim/:token', (req, res) => {
   const invite = db.getInvite(tokenHash(req.params.token));
   if (!invite) return res.status(404).send(views.claimPage({ expired: true, supportEmail: db.firstOwnerEmail() }));
   res.send(views.claimPage({ church: db.getChurchById(invite.church_id), email: invite.email }));
 });
-app.post('/claim/:token', (req, res) => {
+app.post('/claim/:token', async (req, res) => {
   if (limited(`claim:${req.ip}`, 10, 900_000)) return res.status(429).send(views.claimPage({ expired: true, supportEmail: db.firstOwnerEmail() }));
   const invite = db.getInvite(tokenHash(req.params.token));
   if (!invite) return res.status(404).send(views.claimPage({ expired: true, supportEmail: db.firstOwnerEmail() }));
@@ -278,8 +316,15 @@ app.post('/claim/:token', (req, res) => {
   else if (pw !== String(req.body.password2 || '')) error = 'The two passwords don\'t match. Please type them again.';
   else if (emailTakenByOther(invite.email, church.id)) error = 'That email is already used by a different church. Ask for a new link with another email.';
   if (error) return res.status(400).send(views.claimPage({ church, email: invite.email, error }));
+  const firstHandoff = !church.handed_off_at;
   db.setChurchLogin(church.id, invite.email, hashPassword(pw));
-  setSession(res, db.getChurchById(church.id));
+  const now = db.getChurchById(church.id);
+  setSession(res, now);
+  if (firstHandoff) {
+    const s = db.accessState(now);
+    await notify(church.id, 'handoff', `${church.name} took over its page`,
+      `${church.name} opened your link and chose a password. They log in with ${invite.email}.${s.state === 'trial' ? ` Their free month runs until ${s.endsAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'America/New_York' })}.` : ''}`, 'handoff');
+  }
   res.redirect('/admin?claimed=1');
 });
 
@@ -321,16 +366,61 @@ app.post('/owner/login', (req, res) => {
 app.post('/owner/logout', (req, res) => { res.clearCookie('oid', { path: '/' }); res.redirect('/owner/login'); });
 
 function renderOwner(req, res, extra = {}, status = 200) {
-  const churches = db.listChurchesForOwner().map(c => ({ ...c, memberUrl: `${baseUrl(req)}/c/${c.slug}` }));
-  res.status(status).send(views.ownerPage({ owner: req.owner, churches, saved: req.query.saved, plans: db.PLANS, ...extra }));
+  const churches = db.listChurchesForOwner().map(c => ({ ...c, memberUrl: `${baseUrl(req)}/c/${c.slug}`, access: db.accessState(c), pendingLogin: isPendingLogin(c.admin_email) }));
+  res.status(status).send(views.ownerPage({
+    owner: req.owner, churches, saved: req.query.saved, plans: db.PLANS, requests: db.openRequests(), events: db.recentEvents(),
+    setup: { email: emailReady(), stripe: stripeReady() }, deleted: req.query.deleted === '1', ...extra,
+  }));
 }
+// A church Steve just made has a stand-in login until he hands it over.
+const isPendingLogin = e => /@pending\.invalid$/.test(String(e));
+
+// Steve adds a church (optionally from a request), then lands on its dashboard to test it and hand it off.
+app.get('/owner/new', requireOwner, (req, res) => {
+  const r = req.query.request ? db.getRequest(Number(req.query.request)) : null;
+  const values = r ? { name: r.church_name, city: r.city, office_email: r.email, office_phone: r.phone } : {};
+  res.send(views.ownerNewChurchPage({ values, requestId: r ? r.id : '', request: r }));
+});
+app.post('/owner/new', requireOwner, (req, res) => {
+  const c = churchFromForm(req.body);
+  const requestId = Number(req.body.request_id) || '';
+  const error = validateChurch(c);
+  if (error) return res.status(400).send(views.ownerNewChurchPage({ values: c, error, requestId, request: requestId ? db.getRequest(requestId) : null }));
+  const church = db.createChurch({ ...c, slug: uniqueSlug(c.name, c.city),
+    admin_email: `setup-${crypto.randomBytes(6).toString('hex')}@pending.invalid`, password_hash: hashPassword(crypto.randomBytes(24).toString('hex')) });
+  if (requestId) db.closeRequest(requestId, church.id);
+  setSession(res, church);
+  res.redirect('/admin?welcome=1');
+});
+app.post('/owner/requests/:id/dismiss', requireOwner, (req, res) => {
+  db.closeRequest(Number(req.params.id));
+  res.redirect('/owner');
+});
+// Open a church's dashboard to finish setting it up. Only before it's handed over: after that, its reports are private.
+app.post('/owner/church/:id/open', requireOwner, (req, res) => {
+  const church = db.getChurchById(Number(req.params.id));
+  if (!church || church.slug === 'demo' || church.handed_off_at) return res.redirect('/owner');
+  setSession(res, church);
+  res.redirect('/admin');
+});
+app.post('/owner/church/:id/delete', requireOwner, (req, res) => {
+  const church = db.getChurchById(Number(req.params.id));
+  if (church && church.slug !== 'demo' && String(req.body.confirm_name || '').trim().toLowerCase() === church.name.trim().toLowerCase()) {
+    db.deleteChurch(church.id);
+    return res.redirect('/owner?deleted=1');
+  }
+  res.redirect(`/owner#church-${Number(req.params.id)}`);
+});
 app.get('/owner', requireOwner, (req, res) => renderOwner(req, res));
 app.post('/owner/church/:id/billing', requireOwner, (req, res) => {
   const id = Number(req.params.id);
   if (!db.getChurchById(id)) return res.redirect('/owner');
   const plan = db.PLANS.includes(req.body.plan) ? req.body.plan : 'trial';
-  const paidUntil = /^\d{4}-\d{2}-\d{2}$/.test(String(req.body.paid_until || '')) ? req.body.paid_until : '';
-  db.updateBilling(id, plan, paidUntil, String(req.body.owner_note || '').slice(0, 500));
+  const isDay = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''));
+  const paidUntil = isDay(req.body.paid_until) ? req.body.paid_until : '';
+  const current = db.getChurchById(id);
+  const trialEnds = isDay(req.body.trial_ends) && req.body.trial_ends !== String(current.trial_ends_at || '').slice(0, 10) ? `${req.body.trial_ends} 23:59:59` : null;
+  db.updateBilling(id, plan, paidUntil, trialEnds, String(req.body.owner_note || '').slice(0, 500));
   res.redirect(`/owner?saved=${id}#church-${id}`);
 });
 app.post('/owner/church/:id/link', requireOwner, (req, res) => {
@@ -353,6 +443,7 @@ app.post('/admin/reports/:id/delete', requireLogin, (req, res) => {
 app.get('/c/:slug', (req, res) => {
   const church = db.getChurchBySlug(req.params.slug);
   if (!church) return res.status(404).send(views.notFoundPage());
+  if (!db.pageIsOn(church)) return res.send(views.pausedMemberPage(church));
   res.send(views.memberPage(church, { demo: church.slug === 'demo' }));
 });
 app.get('/c/:slug/flyer', async (req, res) => {
@@ -366,6 +457,7 @@ app.get('/c/:slug/flyer', async (req, res) => {
 app.post('/api/c/:slug/check', async (req, res) => {
   const church = db.getChurchBySlug(req.params.slug);
   if (!church) return res.status(404).json({ error: 'We could not find this church.' });
+  if (!db.pageIsOn(church)) return res.status(403).json({ error: `This page is paused. Don't reply to the message. Call the church office at ${formatPhone(church.office_phone)}.` });
   if (limited(`check:${req.ip}`, 20, 600_000)) return res.status(429).json({ error: 'You have checked a lot of messages. Please wait a few minutes.' });
   if (limited(`church:${church.id}`, 500, 86_400_000)) return res.status(429).json({ error: 'This page is very busy today. Please call the church office.' });
 
@@ -380,7 +472,13 @@ app.post('/api/c/:slug/check', async (req, res) => {
 
   try {
     const answer = await checkMessage(church, { message, sender, image: img });
-    db.logCheck(church.id, answer.verdict, answer.flags);
+    // Checks made by the church office or by Steve while logged in are tests, not members.
+    const isTest = !!readOwner(req) || readSession(req)?.id === church.id;
+    if (church.slug !== 'demo' && db.logCheck(church.id, answer.verdict, answer.flags, isTest)) {
+      notify(church.id, 'first_check', `${church.name}: first member check`,
+        `A member of ${church.name} just checked a message for the first time (it came back "${answer.verdict === 'scam' ? 'scam' : 'unsure'}"). The church is using the page.`, 'first_check')
+        .catch(err => console.error('notify failed', err));
+    } else if (church.slug === 'demo') db.logCheck(church.id, answer.verdict, answer.flags, true);
     res.json({
       verdict: answer.verdict, headline: answer.headline, explanation: answer.explanation,
       redFlags: answer.redFlags, steps: answer.steps, contactHints: answer.contactHints,
@@ -408,4 +506,5 @@ app.post('/api/c/:slug/report', (req, res) => {
 
 app.use((req, res) => res.status(404).send(views.notFoundPage()));
 
+startSweeper();
 app.listen(PORT, () => console.log(`Listening on port ${PORT}. AI ${aiAvailable() ? 'on' : 'off (no ANTHROPIC_API_KEY set)'}.`));
